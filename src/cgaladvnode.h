@@ -1,11 +1,10 @@
 #pragma once
 
 #include "node.h"
-#include "visitor.h"
 #include "value.h"
 #include "linalg.h"
 
-enum cgaladv_type_e {
+enum class CgaladvType {
 	MINKOWSKI,
 	GLIDE,
 	SUBDIV,
@@ -16,13 +15,11 @@ enum cgaladv_type_e {
 class CgaladvNode : public AbstractNode
 {
 public:
-	CgaladvNode(const ModuleInstantiation *mi, cgaladv_type_e type) : AbstractNode(mi), type(type) {
+	VISITABLE();
+	CgaladvNode(const ModuleInstantiation *mi, CgaladvType type) : AbstractNode(mi), type(type) {
 		convexity = 1;
 	}
 	virtual ~CgaladvNode() { }
-        virtual Response accept(class State &state, Visitor &visitor) const {
-		return visitor.visit(state, *this);
-	}
 	virtual std::string toString() const;
 	virtual std::string name() const;
 
@@ -31,5 +28,5 @@ public:
 	int convexity, level;
 	Vector3d newsize;
 	Eigen::Matrix<bool,3,1> autosize;
-	cgaladv_type_e type;
+	CgaladvType type;
 };

@@ -185,6 +185,11 @@ void LegacyEditor::setText(const QString &text)
 	this->textedit->insertPlainText(text);
 }
 
+bool LegacyEditor::canUndo()
+{
+    return (this->textedit->document()->availableUndoSteps() != 0);
+}
+
 void LegacyEditor::undo()
 {
 	this->textedit->undo();
@@ -238,6 +243,13 @@ void LegacyEditor::replaceAll(const QString &findText, const QString &replaceTex
 bool LegacyEditor::findString(const QString & exp, bool findBackwards) const
 {
 	return this->textedit->find(exp, findBackwards ? QTextDocument::FindBackward : QTextDocument::FindFlags(0));
+}
+
+int LegacyEditor::resetFindIndicators(const QString &findText, bool visibility)//incomplete-place-hoder
+{
+    int findwordcount = 0;
+    // blank see scintillaeditor.cpp
+    return findwordcount;
 }
 
 bool LegacyEditor::find(const QString &newText, bool findNext, bool findBackwards)

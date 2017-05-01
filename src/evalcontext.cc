@@ -1,5 +1,6 @@
 #include "evalcontext.h"
-#include "module.h"
+#include "UserModule.h"
+#include "ModuleInstantiation.h"
 #include "expression.h"
 #include "function.h"
 #include "printutils.h"
@@ -16,18 +17,39 @@ EvalContext::EvalContext(const Context *parent,
 const std::string &EvalContext::getArgName(size_t i) const
 {
 	assert(i < this->eval_arguments.size());
-	return this->eval_arguments[i].first;
+	return this->eval_arguments[i].name;
 }
 
 ValuePtr EvalContext::getArgValue(size_t i, const Context *ctx) const
 {
 	assert(i < this->eval_arguments.size());
-	const Assignment &arg = this->eval_arguments[i];
+	const auto &arg = this->eval_arguments[i];
 	ValuePtr v;
-	if (arg.second) {
-		v = arg.second->evaluate(ctx ? ctx : this);
+	if (arg.expr) {
+		v = arg.expr->evaluate(ctx ? ctx : this);
 	}
 	return v;
+}
+
+/*!
+  Resolves arguments specified by evalctx, using args to lookup positional arguments.
+  Returns an AssignmentMap (string -> Expression*)
+*/
+AssignmentMap EvalContext::resolveArguments(const AssignmentList &args) const
+{
+  AssignmentMap resolvedArgs;
+  size_t posarg = 0;
+  // Iterate over positional args
+  for (size_t i=0; i<this->numArgs(); i++) {
+    const auto &name = this->getArgName(i); // name is optional
+    const auto expr = this->getArgs()[i].expr.get();
+    if (!name.empty()) {
+      resolvedArgs[name] = expr;
+    }
+    // If positional, find name of arg with this position
+    else if (posarg < args.size()) resolvedArgs[args[posarg++].name] = expr;
+  }
+  return resolvedArgs;
 }
 
 size_t EvalContext::numChildren() const
@@ -37,20 +59,31 @@ size_t EvalContext::numChildren() const
 
 ModuleInstantiation *EvalContext::getChild(size_t i) const
 {
-	return this->scope ? this->scope->children[i] : NULL; 
+	return this->scope ? this->scope->children[i] : nullptr; 
 }
 
 void EvalContext::assignTo(Context &target) const
 {
-	for(const auto &assignment : this->eval_arguments) {
+	for (const auto &assignment : this->eval_arguments) {
 		ValuePtr v;
-		if (assignment.second) v = assignment.second->evaluate(&target);
-		if (target.has_local_variable(assignment.first)) {
-			PRINTB("WARNING: Ignoring duplicate variable assignment %s = %s", assignment.first % v->toString());
+		if (assignment.expr) v = assignment.expr->evaluate(&target);
+		if (target.has_local_variable(assignment.name)) {
+			PRINTB("WARNING: Ignoring duplicate variable assignment %s = %s", assignment.name % v->toString());
 		} else {
-			target.set_variable(assignment.first, v);
+			target.set_variable(assignment.name, v);
 		}
 	}
+}
+
+std::ostream &operator<<(std::ostream &stream, const EvalContext &ec)
+{
+	for (size_t i = 0; i < ec.numArgs(); i++) {
+		if (i > 0) stream << ", ";
+		if (!ec.getArgName(i).empty()) stream << ec.getArgName(i) << " = ";
+		auto val = ec.getArgValue(i);
+		stream << val->toEchoString();
+	}
+	return stream;
 }
 
 #ifdef DEBUG
@@ -65,7 +98,7 @@ std::string EvalContext::dump(const AbstractModule *mod, const ModuleInstantiati
 
 	s << boost::format("  eval args:");
 	for (size_t i=0;i<this->eval_arguments.size();i++) {
-		s << boost::format("    %s = %s") % this->eval_arguments[i].first % this->eval_arguments[i].second;
+		s << boost::format("    %s = %s") % this->eval_arguments[i].name % this->eval_arguments[i].expr;
 	}
 	if (this->scope && this->scope->children.size() > 0) {
 		s << boost::format("    children:");
@@ -74,11 +107,11 @@ std::string EvalContext::dump(const AbstractModule *mod, const ModuleInstantiati
 		}
 	}
 	if (mod) {
-		const Module *m = dynamic_cast<const Module*>(mod);
+		const UserModule *m = dynamic_cast<const UserModule*>(mod);
 		if (m) {
 			s << boost::format("  module args:");
 			for(const auto &arg : m->definition_arguments) {
-				s << boost::format("    %s = %s") % arg.first % *(variables[arg.first]);
+				s << boost::format("    %s = %s") % arg.name % *(variables[arg.name]);
 			}
 		}
 	}

@@ -50,11 +50,13 @@ public:
 	void initLexer();
 	void noColor();
 	QString selectedText();
-	bool find(const QString &, bool findNext = false, bool findBackwards = false);
+	int resetFindIndicators(const QString &findText, bool visibility = true);
+    bool find(const QString &, bool findNext = false, bool findBackwards = false);
 	void replaceSelectedText(const QString&);
 	void replaceAll(const QString &findText, const QString &replaceText);
 	QStringList colorSchemes();
-        
+    bool canUndo();
+
 private:
         void getRange(int *lineFrom, int *lineTo);
         void setColormap(const EditorColorScheme *colorScheme);
@@ -99,7 +101,8 @@ private slots:
 
 private:
 	QVBoxLayout *scintillaLayout;
-	static const int indicatorNumber = 8; // first 8 are used by lexers
+    static const int errorIndicatorNumber = 8; // first 8 are used by lexers 
+    static const int findIndicatorNumber = 9; 
 	static const int markerNumber = 2;
 	ScadLexer *lexer;
 	QFont currentFont;

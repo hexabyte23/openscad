@@ -2,12 +2,13 @@
 #include <algorithm>
 #include <QString>
 #include <QChar>
-#include "boosty.h"
 #include "scintillaeditor.h"
 #include <Qsci/qscicommandset.h>
 #include "Preferences.h"
 #include "PlatformUtils.h"
 #include "settings.h"
+#include <boost/filesystem.hpp>
+namespace fs=boost::filesystem;
 
 class SettingsConverter {
 public:
@@ -72,11 +73,11 @@ QsciScintilla::WhitespaceVisibility SettingsConverter::toShowWhitespaces(Value v
 EditorColorScheme::EditorColorScheme(fs::path path) : path(path)
 {
 	try {
-		boost::property_tree::read_json(boosty::stringy(path).c_str(), pt);
+		boost::property_tree::read_json(path.generic_string().c_str(), pt);
 		_name = QString(pt.get<std::string>("name").c_str());
 		_index = pt.get<int>("index");
 	} catch (const std::exception & e) {
-		PRINTB("Error reading color scheme file '%s': %s", boosty::stringy(path).c_str() % e.what());
+		PRINTB("Error reading color scheme file '%s': %s", path.generic_string().c_str() % e.what());
 		_name = "";
 		_index = 0;
 	}
@@ -139,7 +140,8 @@ ScintillaEditor::ScintillaEditor(QWidget *parent) : EditorInterface(parent)
 	scintillaLayout->setContentsMargins(0, 0, 0, 0);
 	scintillaLayout->addWidget(qsci);
 
-	qsci->indicatorDefine(QsciScintilla::RoundBoxIndicator, indicatorNumber);
+	qsci->indicatorDefine(QsciScintilla::RoundBoxIndicator, errorIndicatorNumber);
+	qsci->indicatorDefine(QsciScintilla::RoundBoxIndicator , findIndicatorNumber); 
 	qsci->markerDefine(QsciScintilla::Circle, markerNumber);
 	qsci->setUtf8(true);
 	qsci->setFolding(QsciScintilla::BoxedTreeFoldStyle, 4);
@@ -223,7 +225,7 @@ void ScintillaEditor::highlightError(int error_pos)
 {
 	int line, index;
 	qsci->lineIndexFromPosition(error_pos, &line, &index);
-	qsci->fillIndicatorRange(line, index, line, index + 1, indicatorNumber);
+	qsci->fillIndicatorRange(line, index, line, index + 1, errorIndicatorNumber);
 	qsci->markerAdd(line, markerNumber);
 }
 
@@ -232,7 +234,7 @@ void ScintillaEditor::unhighlightLastError()
 	int totalLength = qsci->text().length();
 	int line, index;
 	qsci->lineIndexFromPosition(totalLength, &line, &index);
-	qsci->clearIndicatorRange(0, 0, line, index, indicatorNumber);
+	qsci->clearIndicatorRange(0, 0, line, index, errorIndicatorNumber);
 	qsci->markerDeleteAll(markerNumber);
 }
 
@@ -328,8 +330,10 @@ void ScintillaEditor::setColormap(const EditorColorScheme *colorScheme)
 		qsci->setCaretLineBackgroundColor(readColor(caret, "line-background", paperColor));
 
 		qsci->setMarkerBackgroundColor(readColor(colors, "error-marker", QColor(255, 0, 0, 100)), markerNumber);
-		qsci->setIndicatorForegroundColor(readColor(colors, "error-indicator", QColor(255, 0, 0, 100)), indicatorNumber);
-		qsci->setIndicatorOutlineColor(readColor(colors, "error-indicator-outline", QColor(255, 0, 0, 100)), indicatorNumber);
+        qsci->setIndicatorForegroundColor(readColor(colors, "error-indicator", QColor(255, 0, 0, 100)), errorIndicatorNumber);//red
+        qsci->setIndicatorOutlineColor(readColor(colors, "error-indicator-outline", QColor(255, 0, 0, 100)), errorIndicatorNumber);//red
+        qsci->setIndicatorForegroundColor(readColor(colors, "find-indicator", QColor(255, 255, 0, 100)), findIndicatorNumber);//yellow
+        qsci->setIndicatorOutlineColor(readColor(colors, "find-indicator-outline", QColor(255, 255, 0, 100)), findIndicatorNumber);//yellow
 		qsci->setWhitespaceForegroundColor(readColor(colors, "whitespace-foreground", textColor));
 		qsci->setMarginsBackgroundColor(readColor(colors, "margin-background", paperColor));
 		qsci->setMarginsForegroundColor(readColor(colors, "margin-foreground", textColor));
@@ -354,8 +358,10 @@ void ScintillaEditor::noColor()
 	qsci->setCaretWidth(2);
 	qsci->setCaretForegroundColor(Qt::black);
 	qsci->setMarkerBackgroundColor(QColor(255, 0, 0, 100), markerNumber);
-	qsci->setIndicatorForegroundColor(QColor(255, 0, 0, 128), indicatorNumber);
-	qsci->setIndicatorOutlineColor(QColor(0, 0, 0, 255), indicatorNumber); // only alpha part is used
+    qsci->setIndicatorForegroundColor(QColor(255, 0, 0, 128), errorIndicatorNumber);//red
+    qsci->setIndicatorOutlineColor(QColor(0, 0, 0, 255), errorIndicatorNumber); // only alpha part is used
+    qsci->setIndicatorForegroundColor(QColor(255, 255, 0, 128), findIndicatorNumber);//yellow
+    qsci->setIndicatorOutlineColor(QColor(0, 0, 0, 255), findIndicatorNumber); // only alpha part is used
 	qsci->setCaretLineBackgroundColor(Qt::white);
 	qsci->setWhitespaceForegroundColor(Qt::black);
 	qsci->setSelectionForegroundColor(Qt::black);
@@ -418,6 +424,11 @@ QStringList ScintillaEditor::colorSchemes()
 	colorSchemes << "Off";
 
 	return colorSchemes;
+}
+
+bool ScintillaEditor::canUndo()
+{
+    return qsci->isUndoAvailable();
 }
 
 void ScintillaEditor::setHighlightScheme(const QString &name)
@@ -512,6 +523,32 @@ void ScintillaEditor::onTextChanged()
   }
 }
 
+int ScintillaEditor::resetFindIndicators(const QString &findText, bool visibility)
+{
+    int findwordcount = 0;
+    int savelineFrom, saveindexFrom, savelineTo, saveindexTo;
+    qsci->getSelection(&savelineFrom, &saveindexFrom, &savelineTo, &saveindexTo);
+    int clearlineFrom, clearindexFrom, clearlineTo, clearindexTo;
+    qsci->selectAll();
+    qsci->getSelection(&clearlineFrom, &clearindexFrom, &clearlineTo, &clearindexTo);
+    qsci->selectAll(false);
+    qsci->clearIndicatorRange(clearlineFrom, clearindexFrom, clearlineTo , clearindexTo, findIndicatorNumber);
+    if (visibility && qsci->findFirst(findText, false /*re*/, false /*cs*/, false /*wo*/, false /*wrap*/, true /*forward*/, 0, 0, false)) {
+        findwordcount++;
+        int lineFrom, indexFrom, lineTo, indexTo;
+        qsci->getSelection(&lineFrom, &indexFrom, &lineTo, &indexTo);
+        qsci->fillIndicatorRange(lineFrom, indexFrom, lineTo, indexTo, findIndicatorNumber); 
+        while (qsci->findNext()) {
+            findwordcount++;
+            qsci->getSelection(&lineFrom, &indexFrom, &lineTo, &indexTo);
+            qsci->fillIndicatorRange(lineFrom, indexFrom, lineTo, indexTo, findIndicatorNumber); 
+        }
+    }
+    //qsci->setSelection(savelineFrom, saveindexFrom, savelineTo, saveindexTo);
+    qsci->findFirst(findText, false, false, false, true, true, savelineFrom, saveindexFrom);
+    return findwordcount;
+}
+
 bool ScintillaEditor::find(const QString &expr, bool findNext, bool findBackwards)
 {
 	int startline = -1, startindex = -1;
@@ -531,7 +568,7 @@ bool ScintillaEditor::find(const QString &expr, bool findNext, bool findBackward
 
 void ScintillaEditor::replaceSelectedText(const QString &newText)
 {
-	if (qsci->selectedText() != newText) qsci->replaceSelectedText(newText);
+    if ((qsci->selectedText() != newText)&&(qsci->hasSelectedText())) qsci->replaceSelectedText(newText);
 }
 
 void ScintillaEditor::replaceAll(const QString &findText, const QString &replaceText)
@@ -539,7 +576,12 @@ void ScintillaEditor::replaceAll(const QString &findText, const QString &replace
   // We need to issue a Select All first due to a bug in QScintilla:
   // It doesn't update the find range when just doing findFirst() + findNext() causing the search
   // to end prematurely if the replaced string is larger than the selected string.
-#if QSCINTILLA_VERSION >= 0x020700
+#if QSCINTILLA_VERSION >= 0x020903
+  // QScintilla bug seams to be fixed in 2.9.3
+  if (qsci->findFirst(findText,
+                      false /*re*/, false /*cs*/, false /*wo*/,
+                      false /*wrap*/, true /*forward*/, 0, 0)) {
+#elif QSCINTILLA_VERSION >= 0x020700
   qsci->selectAll();
   if (qsci->findFirstInSelection(findText, 
                       false /*re*/, false /*cs*/, false /*wo*/, 
@@ -556,6 +598,7 @@ void ScintillaEditor::replaceAll(const QString &findText, const QString &replace
     }
   }
 }
+
 
 void ScintillaEditor::getRange(int *lineFrom, int *lineTo)
 {

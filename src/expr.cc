@@ -30,19 +30,25 @@
 #include <assert.h>
 #include <sstream>
 #include <algorithm>
-#include "stl-utils.h"
 #include "printutils.h"
 #include "stackcheck.h"
 #include "exceptions.h"
 #include "feature.h"
 #include <boost/bind.hpp>
 
+#include <boost/assign/std/vector.hpp>
+using namespace boost::assign; // bring 'operator+=()' into scope
+
 // unnamed namespace
 namespace {
+	bool isListComprehension(const shared_ptr<Expression> &e) {
+		return dynamic_cast<const ListComprehension *>(e.get());
+	}
+
 	Value::VectorType flatten(Value::VectorType const& vec) {
 		int n = 0;
 		for (unsigned int i = 0; i < vec.size(); i++) {
-			assert(vec[i]->type() == Value::VECTOR);
+			assert(vec[i]->type() == Value::ValueType::VECTOR);
 			n += vec[i]->toVector().size();
 		}
 		Value::VectorType ret; ret.reserve(n);
@@ -58,325 +64,241 @@ namespace {
 	}
 }
 
-Expression::Expression() : first(NULL), second(NULL), third(NULL)
-{
-}
-
-Expression::Expression(Expression *expr) : first(expr), second(NULL), third(NULL)
-{
-	children.push_back(expr);
-}
-
-Expression::Expression(Expression *left, Expression *right) : first(left), second(right), third(NULL)
-{
-	children.push_back(left);
-	children.push_back(right);
-}
-
-Expression::Expression(Expression *expr1, Expression *expr2, Expression *expr3)
-	: first(expr1), second(expr2), third(expr3)
-{
-	children.push_back(expr1);
-	children.push_back(expr2);
-	children.push_back(expr3);
-}
-
-Expression::~Expression()
-{
-	std::for_each(this->children.begin(), this->children.end(), del_fun<Expression>());
-}
-
 namespace /* anonymous*/ {
 
 	std::ostream &operator << (std::ostream &o, AssignmentList const& l) {
 		for (size_t i=0; i < l.size(); i++) {
 			const Assignment &arg = l[i];
 			if (i > 0) o << ", ";
-			if (!arg.first.empty()) o << arg.first  << " = ";
-			o << *arg.second;
+			if (!arg.name.empty()) o << arg.name  << " = ";
+			o << *arg.expr;
 		}
 		return o;
 	}
 
 }
 
-bool Expression::isListComprehension() const
+bool Expression::isLiteral() const
 {
-	return false;
+    return false;
 }
 
-ExpressionNot::ExpressionNot(Expression *expr) : Expression(expr)
-{
-}
-
-ValuePtr ExpressionNot::evaluate(const Context *context) const
-{
-	return !first->evaluate(context);
-}
-
-void ExpressionNot::print(std::ostream &stream) const
-{
-	stream << "!" << *first;
-}
-
-ExpressionLogicalAnd::ExpressionLogicalAnd(Expression *left, Expression *right) : Expression(left, right)
+UnaryOp::UnaryOp(UnaryOp::Op op, Expression *expr, const Location &loc) : Expression(loc), op(op), expr(expr)
 {
 }
 
-ValuePtr ExpressionLogicalAnd::evaluate(const Context *context) const
+ValuePtr UnaryOp::evaluate(const Context *context) const
 {
-	return this->first->evaluate(context) && this->second->evaluate(context);
+	switch (this->op) {
+	case (Op::Not):
+		return !this->expr->evaluate(context);
+	case (Op::Negate):
+		return -this->expr->evaluate(context);
+	default:
+		return ValuePtr::undefined;
+		// FIXME: error:
+	}
 }
 
-void ExpressionLogicalAnd::print(std::ostream &stream) const
+const char *UnaryOp::opString() const
 {
-	stream << "(" << *first << " && " << *second << ")";
+	switch (this->op) {
+	case Op::Not:
+		return "!";
+		break;
+	case Op::Negate:
+		return "-";
+		break;
+	default:
+		return "";
+		// FIXME: Error: unknown op
+	}
 }
 
-ExpressionLogicalOr::ExpressionLogicalOr(Expression *left, Expression *right) : Expression(left, right)
-{
+bool UnaryOp::isLiteral() const { 
+
+    if(this->expr->isLiteral()) 
+        return true;
+    return false;
 }
 
-ValuePtr ExpressionLogicalOr::evaluate(const Context *context) const
+void UnaryOp::print(std::ostream &stream) const
 {
-	return this->first->evaluate(context) || this->second->evaluate(context);
+	stream << opString() << *this->expr;
 }
 
-void ExpressionLogicalOr::print(std::ostream &stream) const
-{
-	stream << "(" << *first << " || " << *second << ")";
-}
-
-ExpressionMultiply::ExpressionMultiply(Expression *left, Expression *right) : Expression(left, right)
-{
-}
-
-ValuePtr ExpressionMultiply::evaluate(const Context *context) const
-{
-	return this->first->evaluate(context) * this->second->evaluate(context);
-}
-
-void ExpressionMultiply::print(std::ostream &stream) const
-{
-	stream << "(" << *first << " * " << *second << ")";
-}
-
-ExpressionDivision::ExpressionDivision(Expression *left, Expression *right) : Expression(left, right)
-{
-}
-
-ValuePtr ExpressionDivision::evaluate(const Context *context) const
-{
-	return this->first->evaluate(context) / this->second->evaluate(context);
-}
-
-void ExpressionDivision::print(std::ostream &stream) const
-{
-	stream << "(" << *first << " / " << *second << ")";
-}
-
-ExpressionModulo::ExpressionModulo(Expression *left, Expression *right) : Expression(left, right)
+BinaryOp::BinaryOp(Expression *left, BinaryOp::Op op, Expression *right, const Location &loc) :
+	Expression(loc), op(op), left(left), right(right)
 {
 }
 
-ValuePtr ExpressionModulo::evaluate(const Context *context) const
+ValuePtr BinaryOp::evaluate(const Context *context) const
 {
-	return this->first->evaluate(context) % this->second->evaluate(context);
+	switch (this->op) {
+	case Op::LogicalAnd:
+		return this->left->evaluate(context) && this->right->evaluate(context);
+		break;
+	case Op::LogicalOr:
+		return this->left->evaluate(context) || this->right->evaluate(context);
+		break;
+	case Op::Multiply:
+		return this->left->evaluate(context) * this->right->evaluate(context);
+		break;
+	case Op::Divide:
+		return this->left->evaluate(context) / this->right->evaluate(context);
+		break;
+	case Op::Modulo:
+		return this->left->evaluate(context) % this->right->evaluate(context);
+		break;
+	case Op::Plus:
+		return this->left->evaluate(context) + this->right->evaluate(context);
+		break;
+	case Op::Minus:
+		return this->left->evaluate(context) - this->right->evaluate(context);
+		break;
+	case Op::Less:
+		return this->left->evaluate(context) < this->right->evaluate(context);
+		break;
+	case Op::LessEqual:
+		return this->left->evaluate(context) <= this->right->evaluate(context);
+		break;
+	case Op::Greater:
+		return this->left->evaluate(context) > this->right->evaluate(context);
+		break;
+	case Op::GreaterEqual:
+		return this->left->evaluate(context) >= this->right->evaluate(context);
+		break;
+	case Op::Equal:
+		return this->left->evaluate(context) == this->right->evaluate(context);
+		break;
+	case Op::NotEqual:
+		return this->left->evaluate(context) != this->right->evaluate(context);
+		break;
+	default:
+		return ValuePtr::undefined;
+		// FIXME: Error: unknown op
+	}
 }
 
-void ExpressionModulo::print(std::ostream &stream) const
+const char *BinaryOp::opString() const
 {
-	stream << "(" << *first << " % " << *second << ")";
+	switch (this->op) {
+	case Op::LogicalAnd:
+		return "&&";
+		break;
+	case Op::LogicalOr:
+		return "||";
+		break;
+	case Op::Multiply:
+		return "*";
+		break;
+	case Op::Divide:
+		return "/";
+		break;
+	case Op::Modulo:
+		return "%";
+		break;
+	case Op::Plus:
+		return "+";
+		break;
+	case Op::Minus:
+		return "-";
+		break;
+	case Op::Less:
+		return "<";
+		break;
+	case Op::LessEqual:
+		return "<=";
+		break;
+	case Op::Greater:
+		return ">";
+		break;
+	case Op::GreaterEqual:
+		return ">=";
+		break;
+	case Op::Equal:
+		return "==";
+		break;
+	case Op::NotEqual:
+		return "!=";
+		break;
+	default:
+		return "";
+		// FIXME: Error: unknown op
+	}
 }
 
-ExpressionPlus::ExpressionPlus(Expression *left, Expression *right) : Expression(left, right)
+void BinaryOp::print(std::ostream &stream) const
 {
+	stream << "(" << *this->left << " " << opString() << " " << *this->right << ")";
 }
 
-ValuePtr ExpressionPlus::evaluate(const Context *context) const
-{
-	return this->first->evaluate(context) + this->second->evaluate(context);
-}
-
-void ExpressionPlus::print(std::ostream &stream) const
-{
-	stream << "(" << *first << " + " << *second << ")";
-}
-
-ExpressionMinus::ExpressionMinus(Expression *left, Expression *right) : Expression(left, right)
-{
-}
-
-ValuePtr ExpressionMinus::evaluate(const Context *context) const
-{
-	return this->first->evaluate(context) - this->second->evaluate(context);
-}
-
-void ExpressionMinus::print(std::ostream &stream) const
-{
-	stream << "(" << *first << " - " << *second << ")";
-}
-
-ExpressionLess::ExpressionLess(Expression *left, Expression *right) : Expression(left, right)
-{
-}
-
-ValuePtr ExpressionLess::evaluate(const Context *context) const
-{
-	return this->first->evaluate(context) < this->second->evaluate(context);
-}
-
-void ExpressionLess::print(std::ostream &stream) const
-{
-	stream << "(" << *first << " < " << *second << ")";
-}
-
-ExpressionLessOrEqual::ExpressionLessOrEqual(Expression *left, Expression *right) : Expression(left, right)
-{
-}
-
-ValuePtr ExpressionLessOrEqual::evaluate(const Context *context) const
-{
-	return this->first->evaluate(context) <= this->second->evaluate(context);
-}
-
-void ExpressionLessOrEqual::print(std::ostream &stream) const
-{
-	stream << "(" << *first << " <= " << *second << ")";
-}
-
-ExpressionEqual::ExpressionEqual(Expression *left, Expression *right) : Expression(left, right)
-{
-}
-
-ValuePtr ExpressionEqual::evaluate(const Context *context) const
-{
-	return this->first->evaluate(context) == this->second->evaluate(context);
-}
-
-void ExpressionEqual::print(std::ostream &stream) const
-{
-	stream << "(" << *first << " == " << *second << ")";
-}
-
-ExpressionNotEqual::ExpressionNotEqual(Expression *left, Expression *right) : Expression(left, right)
-{
-}
-
-ValuePtr ExpressionNotEqual::evaluate(const Context *context) const
-{
-	return this->first->evaluate(context) != this->second->evaluate(context);
-}
-
-void ExpressionNotEqual::print(std::ostream &stream) const
-{
-	stream << "(" << *first << " != " << *second << ")";
-}
-
-ExpressionGreaterOrEqual::ExpressionGreaterOrEqual(Expression *left, Expression *right) : Expression(left, right)
-{
-}
-
-ValuePtr ExpressionGreaterOrEqual::evaluate(const Context *context) const
-{
-	return this->first->evaluate(context) >= this->second->evaluate(context);
-}
-
-void ExpressionGreaterOrEqual::print(std::ostream &stream) const
-{
-	stream << "(" << *first << " >= " << *second << ")";
-}
-
-ExpressionGreater::ExpressionGreater(Expression *left, Expression *right) : Expression(left, right)
+TernaryOp::TernaryOp(Expression *cond, Expression *ifexpr, Expression *elseexpr, const Location &loc)
+	: Expression(loc), cond(cond), ifexpr(ifexpr), elseexpr(elseexpr)
 {
 }
 
-ValuePtr ExpressionGreater::evaluate(const Context *context) const
+ValuePtr TernaryOp::evaluate(const Context *context) const
 {
-	return this->first->evaluate(context) > this->second->evaluate(context);
+	return (this->cond->evaluate(context) ? this->ifexpr : this->elseexpr)->evaluate(context);
 }
 
-void ExpressionGreater::print(std::ostream &stream) const
+void TernaryOp::print(std::ostream &stream) const
 {
-	stream << "(" << *first << " > " << *second << ")";
+	stream << "(" << *this->cond << " ? " << *this->ifexpr << " : " << *this->elseexpr << ")";
 }
 
-ExpressionTernary::ExpressionTernary(Expression *expr1, Expression *expr2, Expression *expr3) : Expression(expr1, expr2, expr3)
-{
-}
-
-ValuePtr ExpressionTernary::evaluate(const Context *context) const
-{
-	return (this->first->evaluate(context) ? this->second : this->third)->evaluate(context);
-}
-
-void ExpressionTernary::print(std::ostream &stream) const
-{
-	stream << "(" << *first << " ? " << *second << " : " << *third << ")";
-}
-
-ExpressionArrayLookup::ExpressionArrayLookup(Expression *left, Expression *right) : Expression(left, right)
+ArrayLookup::ArrayLookup(Expression *array, Expression *index, const Location &loc)
+	: Expression(loc), array(array), index(index)
 {
 }
 
-ValuePtr ExpressionArrayLookup::evaluate(const Context *context) const {
-	return this->first->evaluate(context)[this->second->evaluate(context)];
+ValuePtr ArrayLookup::evaluate(const Context *context) const {
+	return this->array->evaluate(context)[this->index->evaluate(context)];
 }
 
-void ExpressionArrayLookup::print(std::ostream &stream) const
+void ArrayLookup::print(std::ostream &stream) const
 {
-	stream << *first << "[" << *second << "]";
+	stream << *array << "[" << *index << "]";
 }
 
-ExpressionInvert::ExpressionInvert(Expression *expr) : Expression(expr)
-{
-}
-
-ValuePtr ExpressionInvert::evaluate(const Context *context) const
-{
-	return -this->first->evaluate(context);
-}
-
-void ExpressionInvert::print(std::ostream &stream) const
-{
-	stream << "-" << *first;
-}
-
-ExpressionConst::ExpressionConst(const ValuePtr &val) : const_value(val)
+Literal::Literal(const ValuePtr &val, const Location &loc) : Expression(loc), value(val)
 {
 }
 
-ValuePtr ExpressionConst::evaluate(const class Context *) const
+ValuePtr Literal::evaluate(const class Context *) const
 {
-	return this->const_value;
+	return this->value;
 }
 
-void ExpressionConst::print(std::ostream &stream) const
+void Literal::print(std::ostream &stream) const
 {
-    stream << *this->const_value;
+    stream << *this->value;
 }
 
-ExpressionRange::ExpressionRange(Expression *expr1, Expression *expr2) : Expression(expr1, expr2)
-{
-}
-
-ExpressionRange::ExpressionRange(Expression *expr1, Expression *expr2, Expression *expr3) : Expression(expr1, expr2, expr3)
+Range::Range(Expression *begin, Expression *end, const Location &loc)
+	: Expression(loc), begin(begin), end(end)
 {
 }
 
-ValuePtr ExpressionRange::evaluate(const Context *context) const
+Range::Range(Expression *begin, Expression *step, Expression *end, const Location &loc)
+	: Expression(loc), begin(begin), step(step), end(end)
 {
-	ValuePtr v1 = this->first->evaluate(context);
-	if (v1->type() == Value::NUMBER) {
-		ValuePtr v2 = this->second->evaluate(context);
-		if (v2->type() == Value::NUMBER) {
-			if (this->children.size() == 2) {
-				RangeType range(v1->toDouble(), v2->toDouble());
+}
+
+ValuePtr Range::evaluate(const Context *context) const
+{
+	ValuePtr beginValue = this->begin->evaluate(context);
+	if (beginValue->type() == Value::ValueType::NUMBER) {
+		ValuePtr endValue = this->end->evaluate(context);
+		if (endValue->type() == Value::ValueType::NUMBER) {
+			if (!this->step) {
+				RangeType range(beginValue->toDouble(), endValue->toDouble());
 				return ValuePtr(range);
 			} else {
-				ValuePtr v3 = this->third->evaluate(context);
-				if (v3->type() == Value::NUMBER) {
-					RangeType range(v1->toDouble(), v2->toDouble(), v3->toDouble());
+				ValuePtr stepValue = this->step->evaluate(context);
+				if (stepValue->type() == Value::ValueType::NUMBER) {
+					RangeType range(beginValue->toDouble(), stepValue->toDouble(), endValue->toDouble());
 					return ValuePtr(range);
 				}
 			}
@@ -385,23 +307,49 @@ ValuePtr ExpressionRange::evaluate(const Context *context) const
 	return ValuePtr::undefined;
 }
 
-void ExpressionRange::print(std::ostream &stream) const
+void Range::print(std::ostream &stream) const
 {
-	stream << "[" << *first << " : " << *second;
-	if (this->children.size() > 2) stream << " : " << *third;
+	stream << "[" << *this->begin;
+	if (this->step) stream << " : " << *this->step;
+	stream << " : " << *this->end;
 	stream << "]";
 }
 
-ExpressionVector::ExpressionVector(Expression *expr) : Expression(expr)
+bool Range::isLiteral() const {
+    if(!this->step){ 
+        if( begin->isLiteral() && end->isLiteral())
+            return true;
+    }else{
+        if( begin->isLiteral() && end->isLiteral() && step->isLiteral())
+            return true;
+    }
+    return false;
+}
+
+Vector::Vector(const Location &loc) : Expression(loc)
 {
 }
 
-ValuePtr ExpressionVector::evaluate(const Context *context) const
+bool Vector::isLiteral() const {
+    for(const auto &e : this->children) {
+        if (!e->isLiteral()){
+            return false;
+        }
+    } 
+    return true;
+}
+
+void Vector::push_back(Expression *expr)
+{
+	this->children.push_back(shared_ptr<Expression>(expr));
+}
+
+ValuePtr Vector::evaluate(const Context *context) const
 {
 	Value::VectorType vec;
 	for(const auto &e : this->children) {
 		ValuePtr tmpval = e->evaluate(context);
-		if (e->isListComprehension()) {
+		if (isListComprehension(e)) {
 			const Value::VectorType result = tmpval->toVector();
 			for (size_t i = 0;i < result.size();i++) {
 				vec.push_back(result[i]);
@@ -413,7 +361,7 @@ ValuePtr ExpressionVector::evaluate(const Context *context) const
 	return ValuePtr(vec);
 }
 
-void ExpressionVector::print(std::ostream &stream) const
+void Vector::print(std::ostream &stream) const
 {
 	stream << "[";
 	for (size_t i=0; i < this->children.size(); i++) {
@@ -423,34 +371,34 @@ void ExpressionVector::print(std::ostream &stream) const
 	stream << "]";
 }
 
-ExpressionLookup::ExpressionLookup(const std::string &var_name) : var_name(var_name)
+Lookup::Lookup(const std::string &name, const Location &loc) : Expression(loc), name(name)
 {
 }
 
-ValuePtr ExpressionLookup::evaluate(const Context *context) const
+ValuePtr Lookup::evaluate(const Context *context) const
 {
-	return context->lookup_variable(this->var_name);
+	return context->lookup_variable(this->name);
 }
 
-void ExpressionLookup::print(std::ostream &stream) const
+void Lookup::print(std::ostream &stream) const
 {
-	stream << this->var_name;
+	stream << this->name;
 }
 
-ExpressionMember::ExpressionMember(Expression *expr, const std::string &member)
-	: Expression(expr), member(member)
+MemberLookup::MemberLookup(Expression *expr, const std::string &member, const Location &loc)
+	: Expression(loc), expr(expr), member(member)
 {
 }
 
-ValuePtr ExpressionMember::evaluate(const Context *context) const
+ValuePtr MemberLookup::evaluate(const Context *context) const
 {
-	ValuePtr v = this->first->evaluate(context);
+	ValuePtr v = this->expr->evaluate(context);
 
-	if (v->type() == Value::VECTOR) {
+	if (v->type() == Value::ValueType::VECTOR) {
 		if (this->member == "x") return v[0];
 		if (this->member == "y") return v[1];
 		if (this->member == "z") return v[2];
-	} else if (v->type() == Value::RANGE) {
+	} else if (v->type() == Value::ValueType::RANGE) {
 		if (this->member == "begin") return v[0];
 		if (this->member == "step") return v[1];
 		if (this->member == "end") return v[2];
@@ -458,82 +406,134 @@ ValuePtr ExpressionMember::evaluate(const Context *context) const
 	return ValuePtr::undefined;
 }
 
-void ExpressionMember::print(std::ostream &stream) const
+void MemberLookup::print(std::ostream &stream) const
 {
-	stream << *first << "." << this->member;
+	stream << *this->expr << "." << this->member;
 }
 
-ExpressionFunctionCall::ExpressionFunctionCall(const std::string &funcname, 
-																							 const AssignmentList &arglist)
-	: funcname(funcname), call_arguments(arglist)
+FunctionCall::FunctionCall(const std::string &name, 
+													 const AssignmentList &args, const Location &loc)
+	: Expression(loc), name(name), arguments(args)
 {
 }
 
-ValuePtr ExpressionFunctionCall::evaluate(const Context *context) const
+ValuePtr FunctionCall::evaluate(const Context *context) const
 {
 	if (StackCheck::inst()->check()) {
-		throw RecursionException::create("function", funcname);
+		throw RecursionException::create("function", this->name);
 	}
     
-	EvalContext c(context, this->call_arguments);
-	ValuePtr result = context->evaluate_function(this->funcname, &c);
+	EvalContext c(context, this->arguments);
+	ValuePtr result = context->evaluate_function(this->name, &c);
 
 	return result;
 }
 
-void ExpressionFunctionCall::print(std::ostream &stream) const
+void FunctionCall::print(std::ostream &stream) const
 {
-	stream << this->funcname << "(" << this->call_arguments << ")";
+	stream << this->name << "(" << this->arguments << ")";
 }
 
-ExpressionLet::ExpressionLet(const AssignmentList &arglist, Expression *expr)
-	: Expression(expr), call_arguments(arglist)
+Expression * FunctionCall::create(const std::string &funcname, const AssignmentList &arglist, Expression *expr, const Location &loc)
+{
+	if (funcname == "assert" && Feature::ExperimentalAssertExpression.is_enabled()) {
+		return new Assert(arglist, expr, loc);
+	} else if (funcname == "echo" && Feature::ExperimentalEchoExpression.is_enabled()) {
+		return new Echo(arglist, expr, loc);
+	} else if (funcname == "let") {
+		return new Let(arglist, expr, loc);
+	}
+
+	// TODO: Generate error/warning if expr != 0?
+	return new FunctionCall(funcname, arglist, loc);
+}
+
+Assert::Assert(const AssignmentList &args, Expression *expr, const Location &loc)
+	: Expression(loc), arguments(args), expr(expr)
+{
+
+}
+
+ValuePtr Assert::evaluate(const Context *context) const
+{
+	EvalContext assert_context(context, this->arguments);
+
+	Context c(&assert_context);
+	evaluate_assert(c, &assert_context, loc);
+
+	ValuePtr result = expr ? expr->evaluate(&c) : ValuePtr::undefined;
+	return result;
+}
+
+void Assert::print(std::ostream &stream) const
+{
+	stream << "assert(" << this->arguments << ")";
+	if (this->expr) stream << " " << *this->expr;
+}
+
+Echo::Echo(const AssignmentList &args, Expression *expr, const Location &loc)
+	: Expression(loc), arguments(args), expr(expr)
+{
+
+}
+
+ValuePtr Echo::evaluate(const Context *context) const
+{
+	ExperimentalFeatureException::check(Feature::ExperimentalEchoExpression);
+
+	std::stringstream msg;
+	EvalContext echo_context(context, this->arguments);
+	msg << "ECHO: " << echo_context;
+	PRINTB("%s", msg.str());
+
+	ValuePtr result = expr ? expr->evaluate(context) : ValuePtr::undefined;
+	return result;
+}
+
+void Echo::print(std::ostream &stream) const
+{
+	stream << "echo(" << this->arguments << ")";
+	if (this->expr) stream << " " << *this->expr;
+}
+
+Let::Let(const AssignmentList &args, Expression *expr, const Location &loc)
+	: Expression(loc), arguments(args), expr(expr)
 {
 }
 
-ValuePtr ExpressionLet::evaluate(const Context *context) const
+ValuePtr Let::evaluate(const Context *context) const
 {
 	Context c(context);
-	evaluate_sequential_assignment(this->call_arguments, &c);
+	evaluate_sequential_assignment(this->arguments, &c);
 
-	return this->first->evaluate(&c);
+	return this->expr->evaluate(&c);
 }
 
-void ExpressionLet::print(std::ostream &stream) const
+void Let::print(std::ostream &stream) const
 {
-	stream << "let(" << this->call_arguments << ") " << *first;
+	stream << "let(" << this->arguments << ") " << *expr;
 }
 
-ExpressionLc::ExpressionLc(Expression *expr) : Expression(expr)
-{
-}
-
-ExpressionLc::ExpressionLc(Expression *expr1, Expression *expr2)
-    : Expression(expr1, expr2)
+ListComprehension::ListComprehension(const Location &loc) : Expression(loc)
 {
 }
 
-bool ExpressionLc::isListComprehension() const
-{
-	return true;
-}
-
-ExpressionLcIf::ExpressionLcIf(Expression *cond, Expression *exprIf, Expression *exprElse)
-    : ExpressionLc(exprIf, exprElse), cond(cond)
+LcIf::LcIf(Expression *cond, Expression *ifexpr, Expression *elseexpr, const Location &loc)
+	: ListComprehension(loc), cond(cond), ifexpr(ifexpr), elseexpr(elseexpr)
 {
 }
 
-ValuePtr ExpressionLcIf::evaluate(const Context *context) const
+ValuePtr LcIf::evaluate(const Context *context) const
 {
-    if (this->second) {
+    if (this->elseexpr) {
     	ExperimentalFeatureException::check(Feature::ExperimentalElseExpression);
     }
 
-    const Expression *expr = this->cond->evaluate(context) ? this->first : this->second;
-
-	Value::VectorType vec;
+    const shared_ptr<Expression> &expr = this->cond->evaluate(context) ? this->ifexpr : this->elseexpr;
+	
+    Value::VectorType vec;
     if (expr) {
-        if (expr->isListComprehension()) {
+        if (isListComprehension(expr)) {
             return expr->evaluate(context);
         } else {
            vec.push_back(expr->evaluate(context));
@@ -543,28 +543,27 @@ ValuePtr ExpressionLcIf::evaluate(const Context *context) const
     return ValuePtr(vec);
 }
 
-void ExpressionLcIf::print(std::ostream &stream) const
+void LcIf::print(std::ostream &stream) const
 {
-    stream << "if(" << *this->cond << ") (" << *this->first << ")";
-    if (this->second) {
-        stream << " else (" << *this->second << ")";
+    stream << "if(" << *this->cond << ") (" << *this->ifexpr << ")";
+    if (this->elseexpr) {
+        stream << " else (" << *this->elseexpr << ")";
     }
 }
 
-ExpressionLcEach::ExpressionLcEach(Expression *expr)
-    : ExpressionLc(expr)
+LcEach::LcEach(Expression *expr, const Location &loc) : ListComprehension(loc), expr(expr)
 {
 }
 
-ValuePtr ExpressionLcEach::evaluate(const Context *context) const
+ValuePtr LcEach::evaluate(const Context *context) const
 {
 	ExperimentalFeatureException::check(Feature::ExperimentalEachExpression);
 
 	Value::VectorType vec;
 
-    ValuePtr v = this->first->evaluate(context);
+    ValuePtr v = this->expr->evaluate(context);
 
-    if (v->type() == Value::RANGE) {
+    if (v->type() == Value::ValueType::RANGE) {
         RangeType range = v->toRange();
         uint32_t steps = range.numValues();
         if (steps >= 1000000) {
@@ -574,37 +573,37 @@ ValuePtr ExpressionLcEach::evaluate(const Context *context) const
                 vec.push_back(ValuePtr(*it));
             }
         }
-    } else if (v->type() == Value::VECTOR) {
+    } else if (v->type() == Value::ValueType::VECTOR) {
         Value::VectorType vector = v->toVector();
         for (size_t i = 0; i < v->toVector().size(); i++) {
             vec.push_back(vector[i]);
         }
-    } else if (v->type() != Value::UNDEFINED) {
+    } else if (v->type() != Value::ValueType::UNDEFINED) {
         vec.push_back(v);
     }
 
-    if (this->first->isListComprehension()) {
+    if (isListComprehension(this->expr)) {
         return ValuePtr(flatten(vec));
     } else {
         return ValuePtr(vec);
     }
 }
 
-void ExpressionLcEach::print(std::ostream &stream) const
+void LcEach::print(std::ostream &stream) const
 {
-    stream << "each (" << *this->first << ")";
+    stream << "each (" << *this->expr << ")";
 }
 
-ExpressionLcFor::ExpressionLcFor(const AssignmentList &arglist, Expression *expr)
-    : ExpressionLc(expr), call_arguments(arglist)
+LcFor::LcFor(const AssignmentList &args, Expression *expr, const Location &loc)
+	: ListComprehension(loc), arguments(args), expr(expr)
 {
 }
 
-ValuePtr ExpressionLcFor::evaluate(const Context *context) const
+ValuePtr LcFor::evaluate(const Context *context) const
 {
 	Value::VectorType vec;
 
-    EvalContext for_context(context, this->call_arguments);
+    EvalContext for_context(context, this->arguments);
 
     Context assign_context(context);
 
@@ -614,7 +613,7 @@ ValuePtr ExpressionLcFor::evaluate(const Context *context) const
 
     Context c(context);
 
-    if (it_values->type() == Value::RANGE) {
+    if (it_values->type() == Value::ValueType::RANGE) {
         RangeType range = it_values->toRange();
         uint32_t steps = range.numValues();
         if (steps >= 1000000) {
@@ -622,48 +621,48 @@ ValuePtr ExpressionLcFor::evaluate(const Context *context) const
         } else {
             for (RangeType::iterator it = range.begin();it != range.end();it++) {
                 c.set_variable(it_name, ValuePtr(*it));
-                vec.push_back(this->first->evaluate(&c));
+                vec.push_back(this->expr->evaluate(&c));
             }
         }
-    } else if (it_values->type() == Value::VECTOR) {
+    } else if (it_values->type() == Value::ValueType::VECTOR) {
         for (size_t i = 0; i < it_values->toVector().size(); i++) {
             c.set_variable(it_name, it_values->toVector()[i]);
-            vec.push_back(this->first->evaluate(&c));
+            vec.push_back(this->expr->evaluate(&c));
         }
-    } else if (it_values->type() != Value::UNDEFINED) {
+    } else if (it_values->type() != Value::ValueType::UNDEFINED) {
         c.set_variable(it_name, it_values);
-        vec.push_back(this->first->evaluate(&c));
+        vec.push_back(this->expr->evaluate(&c));
     }
 
-    if (this->first->isListComprehension()) {
+    if (isListComprehension(this->expr)) {
         return ValuePtr(flatten(vec));
     } else {
         return ValuePtr(vec);
     }
 }
 
-void ExpressionLcFor::print(std::ostream &stream) const
+void LcFor::print(std::ostream &stream) const
 {
-    stream << "for(" << this->call_arguments << ") (" << *this->first << ")";
+    stream << "for(" << this->arguments << ") (" << *this->expr << ")";
 }
 
-ExpressionLcForC::ExpressionLcForC(const AssignmentList &arglist, const AssignmentList &incrargs, Expression *cond, Expression *expr)
-    : ExpressionLc(cond, expr), call_arguments(arglist), incr_arguments(incrargs)
+LcForC::LcForC(const AssignmentList &args, const AssignmentList &incrargs, Expression *cond, Expression *expr, const Location &loc)
+	: ListComprehension(loc), arguments(args), incr_arguments(incrargs), cond(cond), expr(expr)
 {
 }
 
-ValuePtr ExpressionLcForC::evaluate(const Context *context) const
+ValuePtr LcForC::evaluate(const Context *context) const
 {
 	ExperimentalFeatureException::check(Feature::ExperimentalForCExpression);
 
 	Value::VectorType vec;
 
     Context c(context);
-    evaluate_sequential_assignment(this->call_arguments, &c);
+    evaluate_sequential_assignment(this->arguments, &c);
 
 	unsigned int counter = 0;
-    while (this->first->evaluate(&c)) {
-        vec.push_back(this->second->evaluate(&c));
+    while (this->cond->evaluate(&c)) {
+        vec.push_back(this->expr->evaluate(&c));
 
 		if (counter++ == 1000000) throw RecursionException::create("for loop", "");
 
@@ -672,41 +671,74 @@ ValuePtr ExpressionLcForC::evaluate(const Context *context) const
         c.apply_variables(tmp);
     }    
 
-    if (this->second->isListComprehension()) {
+    if (isListComprehension(this->expr)) {
         return ValuePtr(flatten(vec));
     } else {
         return ValuePtr(vec);
     }
 }
 
-void ExpressionLcForC::print(std::ostream &stream) const
+void LcForC::print(std::ostream &stream) const
 {
     stream
-        << "for(" << this->call_arguments
-        << ";" << *this->first
+        << "for(" << this->arguments
+        << ";" << *this->cond
         << ";" << this->incr_arguments
-        << ") " << *this->second;
+        << ") " << *this->expr;
 }
 
-ExpressionLcLet::ExpressionLcLet(const AssignmentList &arglist, Expression *expr)
-    : ExpressionLc(expr), call_arguments(arglist)
+LcLet::LcLet(const AssignmentList &args, Expression *expr, const Location &loc)
+	: ListComprehension(loc), arguments(args), expr(expr)
 {
 }
 
-ValuePtr ExpressionLcLet::evaluate(const Context *context) const
+ValuePtr LcLet::evaluate(const Context *context) const
 {
     Context c(context);
-    evaluate_sequential_assignment(this->call_arguments, &c);
-    return this->first->evaluate(&c);
+    evaluate_sequential_assignment(this->arguments, &c);
+    return this->expr->evaluate(&c);
 }
 
-void ExpressionLcLet::print(std::ostream &stream) const
+void LcLet::print(std::ostream &stream) const
 {
-    stream << "let(" << this->call_arguments << ") (" << *this->first << ")";
+    stream << "let(" << this->arguments << ") (" << *this->expr << ")";
 }
 
 std::ostream &operator<<(std::ostream &stream, const Expression &expr)
 {
 	expr.print(stream);
 	return stream;
+}
+
+void evaluate_assert(const Context &context, const class EvalContext *evalctx, const Location &loc)
+{
+	ExperimentalFeatureException::check(Feature::ExperimentalAssertExpression);
+
+	AssignmentList args;
+	args += Assignment("condition"), Assignment("message");
+
+	Context c(&context);
+
+	AssignmentMap assignments = evalctx->resolveArguments(args);
+	for (const auto &arg : args) {
+		auto it = assignments.find(arg.name);
+		if (it != assignments.end()) {
+			c.set_variable(arg.name, assignments[arg.name]->evaluate(evalctx));
+		}
+	}
+	
+	const ValuePtr condition = c.lookup_variable("condition");
+
+	if (!condition->toBool()) {
+		std::stringstream msg;
+		msg << "ERROR: Assertion";
+		const Expression *expr = assignments["condition"];
+		if (expr) msg << " '" << *expr << "'";
+		msg << " failed, line " << loc.firstLine();
+		const ValuePtr message = c.lookup_variable("message", true);
+		if (message->isDefined()) {
+			msg << ": " << message->toEchoString();
+		}
+		throw AssertionFailedException(msg.str());
+	}
 }
