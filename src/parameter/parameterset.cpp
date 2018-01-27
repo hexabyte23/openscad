@@ -30,7 +30,7 @@ std::vector<std::string> ParameterSet::getParameterNames()
 
 boost::optional<pt::ptree &> ParameterSet::getParameterSet(const std::string &setName)
 {
-	boost::optional<pt::ptree &> sets = root.get_child_optional(ParameterSet::parameterSetsKey);
+	boost::optional<pt::ptree &> sets = parameterSets();
 	if (!sets.is_initialized()) {
 		return sets;
 	}
@@ -92,7 +92,7 @@ void ParameterSet::writeParameterSet(const std::string &filename)
 
 void ParameterSet::applyParameterSet(FileModule *fileModule, const std::string &setName)
 {
-	if (fileModule == NULL || this->root.empty()) return;
+	if (fileModule == nullptr || this->root.empty()) return;
 	try {
 		ModuleContext ctx;
 		boost::optional<pt::ptree &> set = getParameterSet(setName);

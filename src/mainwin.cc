@@ -41,6 +41,7 @@
 #include "builtin.h"
 #include "memory.h"
 #include "expression.h"
+#include "modcontext.h"
 #include "progress.h"
 #include "dxfdim.h"
 #include "legacyeditor.h"
@@ -85,7 +86,6 @@
 #include <QTimer>
 #include <QMessageBox>
 #include <QDesktopServices>
-#include <QSettings>
 #include <QProgressDialog>
 #include <QMutexLocker>
 #include <QTemporaryFile>
@@ -94,6 +94,8 @@
 #include <QDesktopWidget>
 #include <string>
 #include "QWordSearchField.h"
+#include <QSettings> //Include QSettings for direct operations on settings arrays
+#include "QSettingsCached.h"
 
 #if (QT_VERSION < QT_VERSION_CHECK(5, 0, 0))
 #include <QTextDocument>
@@ -142,38 +144,6 @@ static char copyrighttext[] =
 	"it under the terms of the GNU General Public License as published by "
 	"the Free Software Foundation; either version 2 of the License, or "
 	"(at your option) any later version.";
-
-static void
-settings_setValueList(const QString &key,const QList<int> &list)
-{
-	QSettings settings;
-	settings.beginWriteArray(key);
-	for (int i=0;i<list.size(); ++i) {
-		settings.setArrayIndex(i);
-		settings.setValue("entry",list[i]);
-	}
-	settings.endArray();
-}
-
-QList<int>
-settings_valueList(const QString &key, const QList<int> &defaultList = QList<int>())
-{
-	QSettings settings;
-	QList<int> result;
-	if (settings.contains(key+"/size")){
-		auto length = settings.beginReadArray(key);
-		for (int i = 0; i < length; ++i) {
-			settings.setArrayIndex(i);
-			result += settings.value("entry").toInt();
-		}
-		settings.endArray();
-		return result;
-	} else {
-		return defaultList;
-	}
-
-}
-
 bool MainWindow::mdiMode = false;
 bool MainWindow::undockMode = false;
 bool MainWindow::reorderMode = false;
@@ -198,7 +168,7 @@ MainWindow::MainWindow(const QString &filename)
 	this->versionLabel = nullptr; // must be initialized before calling updateStatusBar()
 	updateStatusBar(nullptr);
 
-	QSettings settings;
+	QSettingsCached settings;
 	editortype = settings.value("editor/editortype").toString();
 	useScintilla = (editortype != "Simple Editor");
 
@@ -236,8 +206,6 @@ MainWindow::MainWindow(const QString &filename)
 	connect(this->cgalworker, SIGNAL(done(shared_ptr<const Geometry>)), 
 					this, SLOT(actionRenderDone(shared_ptr<const Geometry>)));
 #endif
-
-	top_ctx.registerBuiltin();
 
 	root_module = nullptr;
 	parsed_module = nullptr;
@@ -291,7 +259,7 @@ MainWindow::MainWindow(const QString &filename)
 	waitAfterReloadTimer->setSingleShot(true);
 	waitAfterReloadTimer->setInterval(200);
 	connect(waitAfterReloadTimer, SIGNAL(timeout()), this, SLOT(waitAfterReload()));
-	connect(this->parameterWidget, SIGNAL(previewRequested()), this, SLOT(actionRenderPreview()));
+	connect(this->parameterWidget, SIGNAL(previewRequested(bool)), this, SLOT(actionRenderPreview(bool)));
 	connect(Preferences::inst(), SIGNAL(ExperimentalChanged()), this, SLOT(changeParameterWidget()));
 	connect(this->e_tval, SIGNAL(textChanged(QString)), this, SLOT(updatedAnimTval()));
 	connect(this->e_fps, SIGNAL(textChanged(QString)), this, SLOT(updatedAnimFps()));
@@ -657,7 +625,7 @@ void MainWindow::updateWindowSettings(bool console, bool editor, bool customizer
 }
 
 void MainWindow::loadViewSettings() {
-	QSettings settings;
+	QSettingsCached settings;
 	if (settings.value("view/showEdges").toBool()) {
 		viewActionShowEdges->setChecked(true);
 		viewModeShowEdges();
@@ -687,7 +655,7 @@ void MainWindow::loadViewSettings() {
 
 void MainWindow::loadDesignSettings()
 {
-	QSettings settings;
+	QSettingsCached settings;
 	if (settings.value("design/autoReload", true).toBool()) {
 		designActionAutoReload->setChecked(true);
 	}
@@ -730,9 +698,9 @@ void MainWindow::updateUndockMode(bool undockMode)
 void MainWindow::updateReorderMode(bool reorderMode)
 {
 	MainWindow::reorderMode = reorderMode;
-	editorDock->setTitleBarWidget(reorderMode ? 0 : editorDockTitleWidget);
-	consoleDock->setTitleBarWidget(reorderMode ? 0 : consoleDockTitleWidget);
-	parameterDock->setTitleBarWidget(reorderMode ? 0 : parameterDockTitleWidget);
+	editorDock->setTitleBarWidget(reorderMode ? nullptr : editorDockTitleWidget);
+	consoleDock->setTitleBarWidget(reorderMode ? nullptr : consoleDockTitleWidget);
+	parameterDock->setTitleBarWidget(reorderMode ? nullptr : parameterDockTitleWidget);
 }
 
 MainWindow::~MainWindow()
@@ -841,7 +809,7 @@ void MainWindow::updateRecentFiles()
 	// if it does. Should prevent empty list items on initial open etc.
 	QFileInfo fileinfo(this->fileName);
 	auto infoFileName = fileinfo.absoluteFilePath();
-	QSettings settings; // already set up properly via main.cpp
+	QSettingsCached settings; // already set up properly via main.cpp
 	auto files = settings.value("recentFileList").toStringList();
 	files.removeAll(infoFileName);
 	files.prepend(infoFileName);
@@ -867,7 +835,7 @@ void MainWindow::updatedAnimTval()
 	else {
 		this->anim_tval = 0.0;
 	}
-	actionRenderPreview();
+	emit actionRenderPreview(true);
 }
 
 void MainWindow::updatedAnimFps()
@@ -946,7 +914,7 @@ void MainWindow::refreshDocument()
 /*!
 	compiles the design. Calls compileDone() if anything was compiled
 */
-void MainWindow::compile(bool reload, bool forcedone)
+void MainWindow::compile(bool reload, bool forcedone, bool rebuildParameterWidget)
 {
 	bool shouldcompiletoplevel = false;
 	bool didcompile = false;
@@ -987,7 +955,7 @@ void MainWindow::compile(bool reload, bool forcedone)
 	if (shouldcompiletoplevel) {
 		console->clear();
 		if (editor->isContentModified()) saveBackup();
-		compileTopLevelDocument();
+		compileTopLevelDocument(rebuildParameterWidget);
 		didcompile = true;
 	}
 
@@ -1129,7 +1097,7 @@ void MainWindow::instantiateRoot()
 	if (this->root_module) {
 		// Evaluate CSG tree
 		PRINT("Compiling design (CSG Tree generation)...");
-		if (this->procevents) QApplication::processEvents();
+		this->processEvents();
 
 		AbstractNode::resetIndexCounter();
 
@@ -1160,7 +1128,7 @@ void MainWindow::instantiateRoot()
 		} else {
 			PRINT("ERROR: Compilation failed!");
 		}
-		if (this->procevents) QApplication::processEvents();
+		this->processEvents();
 	}
 }
 
@@ -1172,7 +1140,7 @@ void MainWindow::compileCSG(bool procevents)
 {
 	assert(this->root_node);
 	PRINT("Compiling design (CSG Products generation)...");
-	if (procevents) QApplication::processEvents();
+	this->processEvents();
 
 	// Main CSG evaluation
 	this->progresswidget = new ProgressWidget(this);
@@ -1190,14 +1158,14 @@ void MainWindow::compileCSG(bool procevents)
 	progress_report_prep(this->root_node, report_func, this);
 	try {
 #ifdef ENABLE_OPENCSG
-		if (procevents) QApplication::processEvents();
+		this->processEvents();
 		this->csgRoot = csgrenderer.buildCSGTree(*root_node);
 #endif
 		GeometryCache::instance()->print();
 #ifdef ENABLE_CGAL
 		CGALCache::instance()->print();
 #endif
-		if (procevents) QApplication::processEvents();
+		this->processEvents();
 	}
 	catch (const ProgressCancelException &e) {
 		PRINT("CSG generation cancelled.");
@@ -1206,7 +1174,7 @@ void MainWindow::compileCSG(bool procevents)
 	updateStatusBar(nullptr);
 
 	PRINT("Compiling design (CSG Products normalization)...");
-	if (procevents) QApplication::processEvents();
+	this->processEvents();
 
 	size_t normalizelimit = 2 * Preferences::inst()->getValue("advanced/openCSGLimit").toUInt();
 	CSGTreeNormalizer normalizer(normalizelimit);
@@ -1220,14 +1188,14 @@ void MainWindow::compileCSG(bool procevents)
 		else {
 			this->root_products.reset();
 			PRINT("WARNING: CSG normalization resulted in an empty tree");
-			if (procevents) QApplication::processEvents();
+			this->processEvents();
 		}
 	}
 
 	const std::vector<shared_ptr<CSGNode> > &highlight_terms = csgrenderer.getHighlightNodes();
 	if (highlight_terms.size() > 0) {
 		PRINTB("Compiling highlights (%d CSG Trees)...", highlight_terms.size());
-		if (procevents) QApplication::processEvents();
+		this->processEvents();
 		
 		this->highlights_products.reset(new CSGProducts());
 		for (unsigned int i = 0; i < highlight_terms.size(); i++) {
@@ -1242,7 +1210,7 @@ void MainWindow::compileCSG(bool procevents)
 	const auto &background_terms = csgrenderer.getBackgroundNodes();
 	if (background_terms.size() > 0) {
 		PRINTB("Compiling background (%d CSG Trees)...", background_terms.size());
-		if (procevents) QApplication::processEvents();
+		this->processEvents();
 		
 		this->background_products.reset(new CSGProducts());
 		for (unsigned int i = 0; i < background_terms.size(); i++) {
@@ -1276,7 +1244,7 @@ void MainWindow::compileCSG(bool procevents)
 	PRINT("Compile and preview finished.");
 	int s = this->renderingTime.elapsed() / 1000;
 	PRINTB("Total rendering time: %d hours, %d minutes, %d seconds", (s / (60*60)) % ((s / 60) % 60) % (s % 60));
-	if (procevents) QApplication::processEvents();
+	this->processEvents();
 }
 
 void MainWindow::actionNew()
@@ -1318,7 +1286,7 @@ void MainWindow::actionOpenRecent()
 
 void MainWindow::clearRecentFiles()
 {
-	QSettings settings; // already set up properly via main.cpp
+	QSettingsCached settings; // already set up properly via main.cpp
 	QStringList files;
 	settings.setValue("recentFileList", files);
 
@@ -1487,7 +1455,7 @@ void MainWindow::actionSaveAs()
 			}
 		}
 		if (Feature::ExperimentalCustomizer.is_enabled()) {
-			this->parameterWidget->writeFile(new_filename);
+			this->parameterWidget->writeFileIfNotEmpty(new_filename);
 		}
 		setFileName(new_filename);
 		actionSave();
@@ -1537,13 +1505,13 @@ void MainWindow::hideFind()
 {
 	find_panel->hide();
 	this->findInputField->setFindCount(editor->resetFindIndicators(this->findInputField->text(), false));
-	QApplication::processEvents();
+	this->processEvents();
 }
 
 void MainWindow::showFind()
 {
 	this->findInputField->setFindCount(editor->resetFindIndicators(this->findInputField->text()));
-	QApplication::processEvents();
+	this->processEvents();
 	findTypeComboBox->setCurrentIndex(0);
 	replaceInputField->hide();
 	replaceButton->hide();
@@ -1560,14 +1528,14 @@ void MainWindow::showFind()
 void MainWindow::findString(QString textToFind)
 {
 	this->findInputField->setFindCount(editor->resetFindIndicators(textToFind));
-	QApplication::processEvents();
+	this->processEvents();
 	editor->find(textToFind);
 }
 
 void MainWindow::showFindAndReplace()
 {
-	this->findInputField->setFindCount(editor->resetFindIndicators(this->findInputField->text()));
-	QApplication::processEvents();
+	this->findInputField->setFindCount(editor->resetFindIndicators(this->findInputField->text()));	
+	this->processEvents();
 	findTypeComboBox->setCurrentIndex(1); 
 	replaceInputField->show();
 	replaceButton->show();
@@ -1768,7 +1736,7 @@ bool MainWindow::fileChangedOnDisk()
 /*!
 	Returns true if anything was compiled.
 */
-void MainWindow::compileTopLevelDocument()
+void MainWindow::compileTopLevelDocument(bool rebuildParameterWidget)
 {
 	resetSuppressedMessages();
 
@@ -1781,14 +1749,14 @@ void MainWindow::compileTopLevelDocument()
 	auto fnameba = this->fileName.toLocal8Bit();
 	const char* fname = this->fileName.isEmpty() ? "" : fnameba;
 	delete this->parsed_module;
-	this->root_module = parse(this->parsed_module, fulltext.c_str(), fs::path(fname), false) ? this->parsed_module : nullptr;
+	this->root_module = parse(this->parsed_module, fulltext.c_str(), fname, false) ? this->parsed_module : nullptr;
 
 	if (Feature::ExperimentalCustomizer.is_enabled()) {
 		if (this->root_module!=nullptr) {
 			//add parameters as annotation in AST
 			CommentParser::collectParameters(fulltext.c_str(),this->root_module);
 		}
-		this->parameterWidget->setParameters(this->root_module);
+		this->parameterWidget->setParameters(this->root_module,rebuildParameterWidget);
 		this->parameterWidget->applyParameters(this->root_module);
 	}
 }
@@ -1815,7 +1783,7 @@ void MainWindow::checkAutoReload()
 
 void MainWindow::autoReloadSet(bool on)
 {
-	QSettings settings;
+	QSettingsCached settings;
 	settings.setValue("design/autoReload",designActionAutoReload->isChecked());
 	if (on) {
 		autoReloadTimer->start(200);
@@ -1847,7 +1815,7 @@ void MainWindow::actionReloadRenderPreview()
 	setCurrentOutput();
 
 	// PRINT("Parsing design (AST generation)...");
-	// QApplication::processEvents();
+	// this->processEvents();
 	this->afterCompileSlot = "csgReloadRender";
 	this->procevents = true;
 	this->top_ctx.set_variable("$preview", ValuePtr(true));
@@ -1873,7 +1841,7 @@ void MainWindow::csgReloadRender()
 	compileEnded();
 }
 
-void MainWindow::actionRenderPreview()
+void MainWindow::actionRenderPreview(bool rebuildParameterWidget)
 {
 	static bool preview_requested;
 
@@ -1885,11 +1853,11 @@ void MainWindow::actionRenderPreview()
 	setCurrentOutput();
 
 	PRINT("Parsing design (AST generation)...");
-	QApplication::processEvents();
+	this->processEvents();
 	this->afterCompileSlot = "csgRender";
 	this->procevents = !viewActionAnimate->isChecked();
 	this->top_ctx.set_variable("$preview", ValuePtr(true));
-	compile(false);
+	compile(false,false,rebuildParameterWidget);
 	if (preview_requested) {
 		// if the action was called when the gui was locked, we must request it one more time
 		// however, it's not possible to call it directly NOR make the loop
@@ -1945,7 +1913,7 @@ void MainWindow::actionRender()
 	setCurrentOutput();
 
 	PRINT("Parsing design (AST generation)...");
-	QApplication::processEvents();
+	this->processEvents();
 	this->afterCompileSlot = "cgalRender";
 	this->procevents = true;
 	this->top_ctx.set_variable("$preview", ValuePtr(false));
@@ -2077,7 +2045,7 @@ void MainWindow::actionDisplayAST()
 	e->setWindowTitle("AST Dump");
 	e->setReadOnly(true);
 	if (root_module) {
-		e->setPlainText(QString::fromUtf8(root_module->dump("", "").c_str()));
+		e->setPlainText(QString::fromUtf8(root_module->dump("").c_str()));
 	} else {
 		e->setPlainText("No AST to dump. Please try compiling first...");
 	}
@@ -2214,7 +2182,8 @@ void MainWindow::actionExport(FileFormat format, const char *type_name, const ch
 	exportFileByName(this->root_geom, format,
 		export_filename.toLocal8Bit().constData(),
 		export_filename.toUtf8());
-	PRINTB("%s export finished.", type_name);
+	PRINTB("%s export finished: %s",
+		type_name % export_filename.toUtf8().constData());
 
 	clearCurrentOutput();
 #endif /* ENABLE_CGAL */
@@ -2380,7 +2349,7 @@ void MainWindow::viewModeThrownTogether()
 
 void MainWindow::viewModeShowEdges()
 {
-	QSettings settings;
+	QSettingsCached settings;
 	settings.setValue("view/showEdges",viewActionShowEdges->isChecked());
 	this->qglview->setShowEdges(viewActionShowEdges->isChecked());
 	this->qglview->updateGL();
@@ -2389,7 +2358,7 @@ void MainWindow::viewModeShowEdges()
 void MainWindow::viewModeShowAxes()
 {
 	bool showaxes = viewActionShowAxes->isChecked();
-	QSettings settings;
+	QSettingsCached settings;
 	settings.setValue("view/showAxes", showaxes);
 	this->viewActionShowScaleProportional->setEnabled(showaxes);
 	this->qglview->setShowAxes(showaxes);
@@ -2398,7 +2367,7 @@ void MainWindow::viewModeShowAxes()
 
 void MainWindow::viewModeShowCrosshairs()
 {
-	QSettings settings;
+	QSettingsCached settings;
 	settings.setValue("view/showCrosshairs",viewActionShowCrosshairs->isChecked());
 	this->qglview->setShowCrosshairs(viewActionShowCrosshairs->isChecked());
 	this->qglview->updateGL();
@@ -2406,7 +2375,7 @@ void MainWindow::viewModeShowCrosshairs()
 
 void MainWindow::viewModeShowScaleProportional()
 {
-	QSettings settings;
+	QSettingsCached settings;
 	settings.setValue("view/showScaleProportional",viewActionShowScaleProportional->isChecked());
 	this->qglview->setShowScaleProportional(viewActionShowScaleProportional->isChecked());
 	this->qglview->updateGL();
@@ -2501,7 +2470,7 @@ void MainWindow::viewCenter()
 
 void MainWindow::viewPerspective()
 {
-	QSettings settings;
+	QSettingsCached settings;
 	settings.setValue("view/orthogonalProjection",false);
 	viewActionPerspective->setChecked(true);
 	viewActionOrthogonal->setChecked(false);
@@ -2511,7 +2480,7 @@ void MainWindow::viewPerspective()
 
 void MainWindow::viewOrthogonal()
 {
-	QSettings settings;
+	QSettingsCached settings;
 	settings.setValue("view/orthogonalProjection",true);
 	viewActionPerspective->setChecked(false);
 	viewActionOrthogonal->setChecked(true);
@@ -2573,7 +2542,7 @@ void MainWindow::setDockWidgetTitle(QDockWidget *dockWidget, QString prefix, boo
 
 void MainWindow::hideToolbars()
 {
-	QSettings settings;
+	QSettingsCached settings;
 	bool shouldHide = viewActionHideToolBars->isChecked();
 	settings.setValue("view/hideToolbar", shouldHide);
 
@@ -2730,7 +2699,7 @@ bool MainWindow::maybeSave()
 void MainWindow::closeEvent(QCloseEvent *event)
 {
 	if (maybeSave()) {
-		QSettings settings;
+		QSettingsCached settings;
 		settings.setValue("window/size", size());
 		settings.setValue("window/position", pos());
 		settings.setValue("window/state", saveState());
@@ -2804,7 +2773,7 @@ void MainWindow::consoleOutput(const QString &msg)
 	c.movePosition(QTextCursor::End);
 	this->console->setTextCursor(c);
 	this->console->append(qmsg);
-	if (this->procevents) QApplication::processEvents();
+	this->processEvents();
 }
 
 void MainWindow::setCurrentOutput()
@@ -2830,3 +2799,7 @@ void MainWindow::setContentsChanged()
 	this->contentschanged = true;
 }
 
+void MainWindow::processEvents()
+{
+	if (this->procevents) QApplication::processEvents();
+}

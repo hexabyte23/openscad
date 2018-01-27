@@ -34,6 +34,7 @@
 #include "builtin.h"
 #include "calc.h"
 #include "polyset.h"
+#include "handle_dep.h"
 
 #include <cmath>
 #include <sstream>
@@ -47,7 +48,7 @@ class LinearExtrudeModule : public AbstractModule
 {
 public:
 	LinearExtrudeModule() { }
-	virtual AbstractNode *instantiate(const Context *ctx, const ModuleInstantiation *inst, EvalContext *evalctx) const;
+	AbstractNode *instantiate(const Context *ctx, const ModuleInstantiation *inst, EvalContext *evalctx) const override;
 };
 
 AbstractNode *LinearExtrudeModule::instantiate(const Context *ctx, const ModuleInstantiation *inst, EvalContext *evalctx) const
@@ -76,7 +77,9 @@ AbstractNode *LinearExtrudeModule::instantiate(const Context *ctx, const ModuleI
 
 	if (!file->isUndefined() && file->type() == Value::ValueType::STRING) {
 		printDeprecation("Support for reading files in linear_extrude will be removed in future releases. Use a child import() instead.");
-		node->filename = lookup_file(file->toString(), inst->path(), c.documentPath());
+		auto filename = lookup_file(file->toString(), inst->path(), c.documentPath());
+		node->filename = filename;
+		handle_dep(filename);
 	}
 
 	// if height not given, and first argument is a number,

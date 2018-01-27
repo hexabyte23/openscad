@@ -40,6 +40,7 @@
 #include "printutils.h"
 #include "fileutils.h"
 #include "feature.h"
+#include "handle_dep.h"
 
 #include <sys/types.h>
 #include <sstream>
@@ -59,7 +60,7 @@ class ImportModule : public AbstractModule
 public:
 	ImportType type;
 	ImportModule(ImportType type = ImportType::UNKNOWN) : type(type) { }
-	virtual AbstractNode *instantiate(const Context *ctx, const ModuleInstantiation *inst, EvalContext *evalctx) const;
+	AbstractNode *instantiate(const Context *ctx, const ModuleInstantiation *inst, EvalContext *evalctx) const override;
 };
 
 AbstractNode *ImportModule::instantiate(const Context *ctx, const ModuleInstantiation *inst, EvalContext *evalctx) const
@@ -99,6 +100,7 @@ AbstractNode *ImportModule::instantiate(const Context *ctx, const ModuleInstanti
 		}
 	}
 	std::string filename = lookup_file(v->isUndefined() ? "" : v->toString(), inst->path(), ctx->documentPath());
+	if (!filename.empty()) handle_dep(filename);
 	ImportType actualtype = this->type;
 	if (actualtype == ImportType::UNKNOWN) {
 		std::string extraw = fs::path(filename).extension().generic_string();

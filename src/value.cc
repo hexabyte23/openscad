@@ -248,7 +248,7 @@ public:
     stream << '[';
     for (size_t i = 0; i < v.size(); i++) {
       if (i > 0) stream << ", ";
-      stream << *v[i];
+      stream << v[i]->toEchoString();
     }
     stream << ']';
     return stream.str();
@@ -694,7 +694,7 @@ public:
     const auto i = convert_to_uint32(idx);
     if (i < str.size()) {
 			//Ensure character (not byte) index is inside the character/glyph array
-			if (i < g_utf8_strlen(str.c_str(), str.size()))	{
+			if (i < static_cast<unsigned int>(g_utf8_strlen(str.c_str(), str.size())))	{
 				gchar utf8_of_cp[6] = ""; //A buffer for a single unicode character to be copied into
 				auto ptr = g_utf8_offset_to_pointer(str.c_str(), i);
 				if (ptr) {
